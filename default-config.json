@@ -1,0 +1,51 @@
+{
+  "models": [
+    {
+      "id": "demo",
+      "name": "本地演示（不调用模型）",
+      "adapter": "demo",
+      "base_url": "",
+      "model": "demo",
+      "credential_ref": "",
+      "input_budget": 12000,
+      "max_output_tokens": 3000,
+      "recent_turns": 4,
+      "timeout_seconds": 60,
+      "json_mode": false,
+      "token_parameter": "max_completion_tokens"
+    },
+    {
+      "id": "529cbb56-1886-414d-9fd9-7c74cb64ae17",
+      "name": "DeepSeek",
+      "adapter": "openai_chat",
+      "base_url": "https://api.deepseek.com",
+      "model": "deepseek-flash",
+      "credential_ref": "DEEPSEEK_API_KEY",
+      "input_budget": 16000,
+      "max_output_tokens": 4000,
+      "recent_turns": 4,
+      "timeout_seconds": 60,
+      "json_mode": true,
+      "token_parameter": "max_completion_tokens"
+    },
+    {
+      "id": "507bec03-f0e3-4fab-ae04-195bce5d978f",
+      "name": "DeepSeek",
+      "adapter": "openai_chat",
+      "base_url": "https://api.deepseek.com",
+      "model": "deepseek-flash",
+      "credential_ref": "DEEPSEEK_API_KEY",
+      "input_budget": 16000,
+      "max_output_tokens": 4000,
+      "recent_turns": 0,
+      "timeout_seconds": 60,
+      "json_mode": true,
+      "token_parameter": "max_completion_tokens"
+    }
+  ],
+  "scene_models": {
+    "cooking": "507bec03-f0e3-4fab-ae04-195bce5d978f",
+    "planning": "507bec03-f0e3-4fab-ae04-195bce5d978f",
+    "shopping": "507bec03-f0e3-4fab-ae04-195bce5d978f"
+  }
+}

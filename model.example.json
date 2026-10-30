@@ -1,0 +1,14 @@
+{
+  "id": "my-provider",
+  "name": "我的兼容模型",
+  "adapter": "openai_chat",
+  "base_url": "https://api.openai.com/v1",
+  "model": "填写服务商提供的真实模型标识",
+  "credential_ref": "DISHHELPER_API_KEY",
+  "input_budget": 16000,
+  "max_output_tokens": 4000,
+  "recent_turns": 4,
+  "timeout_seconds": 60,
+  "json_mode": true,
+  "token_parameter": "max_completion_tokens"
+}
