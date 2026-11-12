@@ -106,14 +106,16 @@ def build_context(conversation, turns, user_input, profile, current_date=None):
         if delivery.get("day"):
             data["discussion_date"] = delivery["day"]
         data["sharing_scope"] = "day_and_persistent" if delivery.get("day_scope") else "persistent_only"
-    if shared is not None and shared.get("summary"):
-        data["shared"] = shared["summary"]
-    for key in ("conditions", "carry_note"):
-        if conversation.get(key):
-            data[key] = conversation[key]
+    # Keep a potentially long, stable R before the more volatile C/U blocks.
+    # Only field order changes; content, budgeting, and delivery remain intact.
     reference = conversation.get("reference")
     if reference:
         data["reference"] = _reference_data(reference)
+    for key in ("conditions", "carry_note"):
+        if conversation.get(key):
+            data[key] = conversation[key]
+    if shared is not None and shared.get("summary"):
+        data["shared"] = shared["summary"]
     application_data = {"role": "user", "content": APPLICATION_DATA_PREFIX + json.dumps(data, ensure_ascii=False)}
     current = {"role": "user", "content": user_input}
     fixed = [system, application_data, current]

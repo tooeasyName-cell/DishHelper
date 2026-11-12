@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from .feedback import APP_AREAS, CONTEXT_FIELDS, CONTEXT_VALUES, FeedbackStore, FEEDBACK_STATUSES, FIELDS, RATINGS, TAGS, scrub
 from .protocol import normalize_app_feedback
+from .cache_usage import reported_cache_token_fields, summarize_cache_usage
 
 STATUSES = ("succeeded", "failed", "pending")
 PREFERENCES = ("baseline", "candidate", "tie", "neither", "skip")
@@ -21,7 +22,8 @@ EVENTS = ("conditions_cleared", "carry_note_cleared", "reference_replaced", "ref
           "selected_plan_publication", "recent_window_dropped")
 FAILURES = ("protocol", "network_or_http", "truncated", "credentials", "other")
 TOKEN_FIELDS = ("prompt_tokens", "completion_tokens", "total_tokens", "input_tokens", "output_tokens",
-                "cached_tokens", "reasoning_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+                "cached_tokens", "reasoning_tokens", "cache_read_input_tokens", "cache_creation_input_tokens",
+                "prompt_cache_hit_tokens", "prompt_cache_miss_tokens", "cache_write_tokens")
 PROMPT_VERSIONS = ("baseline-v1", "compact-v1", "baseline-v2", "compact-v2",
                    "baseline-v3", "compact-v3", "baseline-v4", "compact-v4", "baseline-v5", "compact-v5", "baseline-v6", "compact-v6", "baseline-v7", "compact-v7", "baseline-v8", "compact-v8", "baseline-v9", "compact-v9", "baseline-v10", "compact-v10", "baseline-v11", "compact-v11", "scene-detail-v11", "custom-request-v1")
 CAVEATS = [
@@ -38,6 +40,7 @@ CAVEATS = [
     "比较调用单独计量，不参与主对话状态；缺少供应商用量不等于零成本，未配置价格不能推算金额。",
     "应用改进反馈是模型提出的待审核建议，条目数不代表独立问题数或已确认的收益；普通与比较分别计数，不自动执行建议。",
     "审核包只在本地生成；变更需开发者审查、验证和明确发布，不会自动更新生产提示词。",
+    "缓存统计仅依据已报告的用量；调用用量可能已合并多次尝试，无法据此补齐未报告字段。原始字段可能是同义别名，不能彼此相加；命中率仅用分子分母均已报告的同批记录。",
 ]
 CHECKLIST = [
     "先核对调用与反馈覆盖率、失败和中断数量，区分演示及真实外部调用。",
@@ -104,16 +107,20 @@ def _number(value):
 def _usage(rows):
     totals = Counter()
     reported = 0
+    usages = []
     for row in rows:
         usage = _load(row.get("usage_json"), {})
+        usages.append(usage)
         if not isinstance(usage, dict):
             continue
         numeric = {key: usage[key] for key in TOKEN_FIELDS if _number(usage.get(key))}
+        numeric.update(reported_cache_token_fields(usage))
         if numeric:
             reported += 1
             totals.update(numeric)
     return {"calls_with_reported_tokens": reported, "calls_without_reported_tokens": len(rows) - reported,
             "token_totals": dict(sorted(totals.items())),
+            "cache_usage": summarize_cache_usage(usages),
             "elapsed_ms_total": sum(row.get("elapsed_ms", 0) for row in rows if _number(row.get("elapsed_ms", 0)))}
 
 
@@ -149,7 +156,7 @@ def _metadata(call, profiles):
             "prompt_version": version, "prompt_sha256": prompt_hash, "scene": scene,
             "protocol_version": meta.get("protocol_version") if meta.get("protocol_version") in
                 ("core-v1+feedback-v1", "core-v1+shared-v1+feedback-v2", "core-v1+sharing-v2+feedback-v3", "core-v1+sharing-v3+feedback-v3", "core-v1+sharing-v3+feedback-v4+display-v1", "core-v1+sharing-v3+feedback-v4+display-v1+long-reference-v1", "core-v1+sharing-v3+feedback-v4+display-v1+long-reference-v1+persistent-impact-v1") else "unknown",
-            "app_version": meta.get("app_version") if meta.get("app_version") in ("0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0", "0.6.1", "0.6.2", "0.7.0", "0.7.1", "0.7.2", "0.7.3", "0.8.0", "0.8.1") else "unknown"}
+            "app_version": meta.get("app_version") if meta.get("app_version") in ("0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0", "0.6.1", "0.6.2", "0.7.0", "0.7.1", "0.7.2", "0.7.3", "0.8.0", "0.8.1", "0.9.0", "0.9.1", "0.9.2", "0.9.3") else "unknown"}
 
 
 def _context_fields(call):

@@ -93,7 +93,7 @@ def render_turn_feedback(repo, feedback, comparisons, turn, observation=None, co
         variant = st.selectbox("候选提示词版本", list(VARIANT_LABELS),
             index=list(VARIANT_LABELS).index(CANDIDATE_VERSION), key=f"comparison_variant_{tid}",
             format_func=lambda value: VARIANT_LABELS[value])
-        profiles = {profile["id"]: profile for profile in repo.list_models()}
+        profiles = {profile["id"]: profile for profile in repo.list_models() if profile["adapter"] != "systemone"}
         chosen_model = st.selectbox("比较使用的模型", ["__original__", *profiles], key=f"comparison_model_{tid}",
             format_func=lambda value: "与原轮相同的保存配置" if value == "__original__" else profiles[value]["name"])
         custom_body_json = None

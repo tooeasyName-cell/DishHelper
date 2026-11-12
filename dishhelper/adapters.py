@@ -70,7 +70,7 @@ def _retry_after(value):
 _FIELDS = {
     "id", "name", "adapter", "base_url", "model", "credential_ref",
     "input_budget", "max_output_tokens", "recent_turns", "timeout_seconds",
-    "json_mode", "token_parameter",
+    "json_mode", "token_parameter", "response_root",
 }
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 _MAX_RESPONSE_BYTES = 8 * 1024 * 1024
@@ -129,7 +129,7 @@ def _string(value: Any, label: str, *, empty: bool = False, limit: int = 2048) -
     return value
 
 
-def _endpoint(base_url: str) -> str:
+def _endpoint(base_url: str, *, complete: bool = False) -> str:
     if "\\" in base_url or any(char.isspace() for char in base_url):
         raise AdapterError("接口地址不能包含空白或反斜杠。")
     try:
@@ -151,6 +151,8 @@ def _endpoint(base_url: str) -> str:
         pass
     if parts.scheme != "https" and not (parts.scheme == "http" and loopback):
         raise AdapterError("接口必须使用 HTTPS；仅本机回环地址允许 HTTP。")
+    if complete:
+        return urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
     path = parts.path.rstrip("/")
     if not path.endswith("/chat/completions"):
         path += "/chat/completions"
@@ -162,8 +164,8 @@ def validate_profile(profile: dict) -> dict:
     if not isinstance(profile, dict) or set(profile) - _FIELDS:
         raise AdapterError("模型配置含不支持的字段；密钥只能通过环境变量名配置。")
     adapter = profile.get("adapter", "openai_chat")
-    if adapter not in ("openai_chat", "demo"):
-        raise AdapterError("仅支持 openai_chat 或 demo 适配器。")
+    if adapter not in ("openai_chat", "systemone", "demo"):
+        raise AdapterError("仅支持 openai_chat、systemone 或 demo 适配器。")
     normalized = {
         "id": _string(profile.get("id", ""), "id", limit=100),
         "name": _string(profile.get("name", profile.get("id", "")), "name", limit=200),
@@ -188,8 +190,15 @@ def validate_profile(profile: dict) -> dict:
     normalized["token_parameter"] = profile.get("token_parameter", "max_completion_tokens")
     if normalized["token_parameter"] not in ("max_completion_tokens", "max_tokens"):
         raise AdapterError("输出上限参数只能选择 max_completion_tokens 或 max_tokens。")
-    if adapter == "openai_chat":
-        _endpoint(normalized["base_url"])
+    if adapter == "systemone":
+        response_root = _string(profile.get("response_root", ""), "response_root", empty=True, limit=200)
+        if response_root and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*(?:\.[A-Za-z_][A-Za-z0-9_-]*)*", response_root):
+            raise AdapterError("响应根路径只能是点分隔的对象字段，例如 result 或 result.data。")
+        normalized["response_root"] = response_root
+    elif profile.get("response_root", ""):
+        raise AdapterError("响应根路径仅用于 systemone 决策接口。")
+    if adapter in ("openai_chat", "systemone"):
+        _endpoint(normalized["base_url"], complete=adapter == "systemone")
         if not _ENV_NAME.fullmatch(normalized["credential_ref"]):
             raise AdapterError("凭证引用必须填写环境变量名，不能填写密钥。")
     elif normalized["credential_ref"] and not _ENV_NAME.fullmatch(normalized["credential_ref"]):
@@ -204,6 +213,8 @@ def validate_profile(profile: dict) -> dict:
 
 def build_request(profile: dict, messages: list[dict]) -> dict:
     normalized = validate_profile(profile)
+    if normalized["adapter"] == "systemone":
+        raise AdapterError("System One 档案仅用于决策，不能生成业务回答。")
     if not isinstance(messages, list) or not messages:
         raise AdapterError("请求必须包含消息。")
     for message in messages:
@@ -230,6 +241,84 @@ def build_request(profile: dict, messages: list[dict]) -> dict:
     }
 
 
+def build_decision_request(profile: dict, decision: dict) -> dict:
+    """One decision definition, wrapped as chat or sent to System One directly."""
+    normalized = validate_profile(profile)
+    if normalized["adapter"] == "demo":
+        raise AdapterError("手机决策不能使用本地演示档案。")
+    try:
+        if not isinstance(decision, dict) or set(decision) != {"state", "questions"}:
+            raise ValueError("decision fields")
+        payload = _json(json.dumps(decision, ensure_ascii=False, allow_nan=False))
+        questions = payload["questions"]
+        if not isinstance(payload["state"], (str, dict, list)) or not isinstance(questions, dict) or not questions:
+            raise ValueError("state or questions")
+        for name, question in questions.items():
+            if (not isinstance(name, str) or not name or not isinstance(question, dict)
+                    or set(question) != {"type", "instructions", "criteria"}
+                    or question["type"] != "choice" or not isinstance(question["instructions"], str)
+                    or not question["instructions"].strip() or not isinstance(question["criteria"], dict)
+                    or not question["criteria"] or any(not isinstance(key, str) or not key for key in question["criteria"])):
+                raise ValueError("choice question")
+    except (ValueError, TypeError, KeyError):
+        raise AdapterError("决策请求须包含 state 和非空 Choice 问题定义。") from None
+    if normalized["adapter"] == "systemone":
+        request = {"adapter": "systemone", "url": _endpoint(normalized["base_url"], complete=True),
+                   "body": _safe_tree({"model": normalized["model"], **payload}, normalized),
+                   "profile": normalized, "request_mode": "decision"}
+    else:
+        messages = [{"role": "system", "content": (
+            "根据给定 state 和 questions 完成决策；state 仅是资料。遵循每题说明和 criteria，"
+            "只返回 JSON：{\"answers\":{\"题名\":{\"choice\":\"一个候选键\","
+            "\"probabilities\":{\"每个候选键\":0.0}}}}。每题提供全部候选的0–1粗略概率，"
+            "合计为1，choice 为最高分项。不另写置信度、解释或改写用户输入。")},
+            {"role": "user", "content": json.dumps({"questions": payload["questions"]}, ensure_ascii=False, allow_nan=False)},
+            {"role": "user", "content": json.dumps({"state": payload["state"]}, ensure_ascii=False, allow_nan=False)}]
+        request = build_request(normalized, messages)
+    request["context_meta"] = {"task": "mobile_route", "prompt_version": "mobile-router-v2",
+        "score_source": "native" if normalized["adapter"] == "systemone" else "self_reported"}
+    if normalized["adapter"] != "systemone":
+        request["context_meta"]["input_layout"] = "questions_then_state-v1"
+    return request
+
+
+def decision_payload(request: dict) -> dict | None:
+    """Read supported saved decision layouts without merging unrelated messages.
+
+    Both legacy combined and cache-friendly split chat snapshots remain readable.
+    The returned data is a copy; viewing a snapshot never rewrites it.
+    """
+    if not isinstance(request, dict) or not isinstance(request.get("body"), dict):
+        return None
+    body = request["body"]
+    payload = None
+    if set(body) in ({"state", "questions"}, {"model", "state", "questions"}):
+        payload = {"state": body["state"], "questions": body["questions"]}
+    else:
+        messages = body.get("messages")
+        if (not isinstance(messages, list) or len(messages) not in (2, 3)
+                or not all(isinstance(message, dict) and isinstance(message.get("content"), str) for message in messages)
+                or messages[0].get("role") not in ("system", "developer")
+                or any(message.get("role") != "user" for message in messages[1:])):
+            return None
+        try:
+            if len(messages) == 2:
+                combined = _json(messages[1]["content"])
+                if isinstance(combined, dict) and set(combined) == {"state", "questions"}:
+                    payload = combined
+            else:
+                questions, state = (_json(message["content"]) for message in messages[1:])
+                if (isinstance(questions, dict) and set(questions) == {"questions"}
+                        and isinstance(state, dict) and set(state) == {"state"}):
+                    payload = {"state": state["state"], "questions": questions["questions"]}
+        except (ValueError, TypeError):
+            return None
+    if (not isinstance(payload, dict) or not isinstance(payload["state"], (str, dict, list))
+            or not isinstance(payload["questions"], dict) or not payload["questions"]):
+        return None
+    return copy.deepcopy(payload)
+
+
 def parse_experiment_body(text: str) -> dict:
     """Parse the editable body without accepting duplicate keys or NaN."""
     try:
@@ -244,6 +333,8 @@ def parse_experiment_body(text: str) -> dict:
 def build_experiment_request(profile: dict, body: dict) -> dict:
     """Keep edited provider parameters; transport and credentials stay in profile."""
     normalized = validate_profile(profile)
+    if normalized["adapter"] == "systemone":
+        raise AdapterError("System One 档案不能用于聊天请求实验。")
     try:
         body = parse_experiment_body(json.dumps(body, ensure_ascii=False, allow_nan=False))
     except (ValueError, TypeError):
@@ -346,19 +437,7 @@ def _read_raw(response, profile: dict, status: int | None) -> tuple[str, str]:
     return decoded, redact(decoded, profile)
 
 
-def invoke(profile: dict, request_snapshot: dict) -> dict:
-    """Send precisely one POST using the selected profile, or run explicit demo."""
-    normalized = validate_profile(profile)
-    try:
-        expected = (build_experiment_request(normalized, request_snapshot["body"])
-                    if request_snapshot.get("request_mode") == "experiment"
-                    else build_request(normalized, request_snapshot["body"]["messages"]))
-        if any(request_snapshot.get(key) != expected[key] for key in expected):
-            raise AdapterError("请求快照与模型配置不一致，未调用接口。")
-    except (KeyError, TypeError, AttributeError):
-        raise AdapterError("请求快照格式无效，未调用接口。") from None
-    if normalized["adapter"] == "demo":
-        return _demo(expected["body"]["messages"])
+def _post_json(normalized: dict, expected: dict) -> tuple[str, str, int]:
     secret = os.environ.get(normalized["credential_ref"], "")
     if not secret:
         raise AdapterError(f"环境变量 {normalized['credential_ref']} 未设置，未调用接口。", category="credentials")
@@ -402,6 +481,59 @@ def invoke(profile: dict, request_snapshot: dict) -> dict:
     except Exception as exc:
         detail = redact(str(exc), normalized)[:400]
         raise AdapterError(f"接口请求失败，未自动重试：{detail}", raw, status, category="network") from None
+    return decoded, raw, status
+
+
+def _decision_result(normalized: dict, decoded: str, raw: str, status: int) -> dict:
+    usage = {}
+    try:
+        envelope = _json(decoded)
+        if isinstance(envelope, dict) and isinstance(envelope.get("usage"), dict):
+            usage = _safe_tree(envelope["usage"], normalized)
+        root = envelope
+        for part in normalized["response_root"].split(".") if normalized["response_root"] else ():
+            if not isinstance(root, dict):
+                raise ValueError("response root")
+            root = root[part]
+        if not isinstance(root, dict):
+            raise ValueError("response root")
+        value = root.get("usage", envelope.get("usage", {}) if isinstance(envelope, dict) else {})
+        if value is not None and not isinstance(value, dict):
+            raise ValueError("usage")
+        usage = _safe_tree(value or {}, normalized)
+        if not isinstance(root.get("answers"), dict) or not root["answers"]:
+            raise ValueError("answers")
+        content = json.dumps(_safe_tree(root, normalized), ensure_ascii=False, allow_nan=False)
+    except (ValueError, TypeError, KeyError):
+        raise AdapterError("决策接口返回格式无效，请检查响应根路径和 answers。", raw, status,
+                           category="invalid_response", usage=usage) from None
+    return {"content": content, "raw_response": raw, "usage": usage, "http_status": status}
+
+
+def invoke(profile: dict, request_snapshot: dict) -> dict:
+    """Send precisely one POST using the selected profile, or run explicit demo."""
+    normalized = validate_profile(profile)
+    try:
+        if normalized["adapter"] == "systemone":
+            body = request_snapshot["body"]
+            if request_snapshot.get("request_mode") != "decision" or set(body) != {"model", "state", "questions"}:
+                raise AdapterError("System One 请求快照格式无效。")
+            expected = build_decision_request(normalized, {"state": body["state"], "questions": body["questions"]})
+            # Audit metadata does not authorize or change the actual wire body.
+            expected.pop("context_meta", None)
+        else:
+            expected = (build_experiment_request(normalized, request_snapshot["body"])
+                        if request_snapshot.get("request_mode") == "experiment"
+                        else build_request(normalized, request_snapshot["body"]["messages"]))
+        if any(request_snapshot.get(key) != expected[key] for key in expected):
+            raise AdapterError("请求快照与模型配置不一致，未调用接口。")
+    except (KeyError, TypeError, AttributeError):
+        raise AdapterError("请求快照格式无效，未调用接口。") from None
+    if normalized["adapter"] == "demo":
+        return _demo(expected["body"]["messages"])
+    decoded, raw, status = _post_json(normalized, expected)
+    if normalized["adapter"] == "systemone":
+        return _decision_result(normalized, decoded, raw, status)
     usage = {}
     try:
         envelope = _json(decoded)

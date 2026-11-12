@@ -12,6 +12,7 @@ import streamlit as st
 from dishhelper.adapters import validate_profile
 from dishhelper.context import BudgetError
 from dishhelper.attempts import AttemptStore
+from dishhelper.cache_ui import render_cache_usage
 from dishhelper.prompts import SCENE_LABELS
 from dishhelper.service import ChatService, load_local_env, state_of
 from dishhelper.runtime_paths import data_directory, local_env_path
@@ -23,6 +24,9 @@ from dishhelper.variants import APP_VERSION
 from dishhelper.maintenance_ui import render_maintenance
 from dishhelper.reference_layout_ui import render_reference_reply
 from dishhelper.display_ui import reference_anchor, latest_anchor, navigation_link
+from dishhelper.mobile_ui import (stash_active_draft, remember_draft, submit_draft,
+    consume_mobile_navigation, observe_desktop, arm_mobile_poll, render_mobile_settings, render_reroute_note)
+from dishhelper.mobile_server import ensure_runtime
 
 ROOT = Path(__file__).resolve().parent
 load_local_env(local_env_path())
@@ -47,6 +51,9 @@ repo = get_repository(os.environ.get("DISHHELPER_DB", str(data_directory() / "di
 service = ChatService(repo)
 feedback = FeedbackStore(repo.path)
 comparisons = ComparisonService(repo)
+stash_active_draft()
+ensure_runtime(repo)
+consume_mobile_navigation(repo)
 
 
 def navigate(conversation_id: str) -> None:
@@ -104,11 +111,19 @@ def model_settings() -> None:
         selection = st.selectbox("编辑模型档案", ["__new__", *by_id],
                                  format_func=lambda value: "新建档案" if value == "__new__" else by_id[value]["name"])
         original = by_id.get(selection, {})
-        with st.form(f"model_config_{selection}"):
+        adapter_choices = ["openai_chat", "systemone", "demo"]
+        adapter = st.selectbox("协议适配器", adapter_choices,
+            index=adapter_choices.index(original.get("adapter", "openai_chat")),
+            key=f"model_adapter_{selection}")
+        native = adapter == "systemone"
+        if native:
+            st.caption("System One 档案仅用于决策路由，直接发送 state 和 questions。不会出现在业务回答模型选项中。")
+        with st.form(f"model_config_{selection}_{adapter}"):
             name = st.text_input("显示名称", original.get("name", "我的模型"))
-            adapter = st.selectbox("协议适配器", ["openai_chat", "demo"],
-                                   index=1 if original.get("adapter") == "demo" else 0)
-            base_url = st.text_input("Base URL（通常以 /v1 结尾）", original.get("base_url", "https://api.openai.com/v1"))
+            base_url = st.text_input("完整请求 URL（System One）" if native else "Base URL（通常以 /v1 结尾）",
+                original.get("base_url", "" if native else "https://api.openai.com/v1"))
+            response_root = st.text_input("响应根路径（可留空）", original.get("response_root", ""),
+                help="直接返回 answers 时留空；外层含 result 时填 result。仅支持用点分隔的对象路径。") if native else ""
             model = st.text_input("服务端模型名", original.get("model", ""))
             credential_ref = st.text_input("API Key 环境变量名", original.get("credential_ref", "DISHHELPER_API_KEY"))
             credential = st.text_input("本次运行的 API Key（可留空，且不写入数据库）", type="password")
@@ -127,7 +142,8 @@ def model_settings() -> None:
                     adapter=adapter, base_url=base_url, model=model, credential_ref=credential_ref,
                     input_budget=int(input_budget), max_output_tokens=int(max_output_tokens),
                     recent_turns=int(recent_turns), timeout_seconds=int(timeout_seconds),
-                    json_mode=json_mode, token_parameter=token_parameter))
+                    json_mode=json_mode, token_parameter=token_parameter,
+                    **({"response_root": response_root.strip()} if native else {})))
                 repo.save_model(profile)
                 if credential and credential_ref:
                     os.environ[credential_ref] = credential
@@ -135,7 +151,7 @@ def model_settings() -> None:
                 st.rerun()
             except (ValueError, RuntimeError) as exc:
                 st.error(str(exc))
-        current_models = repo.list_models()
+        current_models = [m for m in repo.list_models() if m["adapter"] != "systemone"]
         model_ids = [m["id"] for m in current_models]
         names = {m["id"]: m["name"] for m in current_models}
         with st.form("scene_defaults"):
@@ -175,7 +191,10 @@ scope = st.sidebar.selectbox("讨论范围", ["__date__", "__longterm__", *meal_
     format_func=lambda value: "按日期" if value == "__date__" else "独立长期规划" if value == "__longterm__" else "历史分组 · " + meal_map[value]["name"])
 if scope == "__date__":
     st.session_state.setdefault("discussion_day", date.today())
-    discussion_day = st.sidebar.date_input("讨论日期", value=None, key="discussion_day")
+    chosen_day = st.session_state.get("discussion_day") or date.today()
+    discussion_day = st.sidebar.date_input("讨论日期", value=None, key="discussion_day",
+        min_value=date(max(1, chosen_day.year - 10), 1, 1),
+        max_value=date(min(9999, chosen_day.year + 10), 12, 31))
     day_group = repo.get_or_create_day(discussion_day.isoformat())
     meal_id = day_group["id"]
 else:
@@ -209,9 +228,10 @@ except ValueError:
 cid = conversation["id"]
 if not conversation["parent_id"]:
     st.session_state.setdefault("last_main_by_scope", {})[scope_tuple] = cid
+observe_desktop(repo, conversation)
 
 explain = st.sidebar.toggle("默认展开原理解释", value=conversation["explain"], key=f"explain_{cid}")
-models = repo.list_models()
+models = [m for m in repo.list_models() if m["adapter"] != "systemone"]
 model_ids = [m["id"] for m in models]
 models_by_id = {m["id"]: m for m in models}
 model_id = st.sidebar.selectbox("本会话模型", model_ids,
@@ -252,6 +272,7 @@ else:
             navigate(conversation["parent_id"])
 
 model_settings()
+render_mobile_settings(repo)
 delivery = repo.get_shared_delivery(cid)
 if delivery is not None:
     with st.sidebar.expander("共享信息 · 当日 / 跨天"):
@@ -352,6 +373,7 @@ for turn in turns:
         st.markdown(turn["user_input"])
     with st.chat_message("assistant"):
         if turn["status"] == "succeeded":
+            render_reroute_note(repo, turn["id"])
             if turn["id"] in marked_turn_ids:
                 st.subheader("持续参考", anchor=reference_anchor(cid, turn["id"]))
             if turn["id"] in marked_turn_ids:
@@ -388,15 +410,15 @@ if pending_calls:
 restore_key = f"restore_draft_{cid}"
 if restore_key in st.session_state:
     st.session_state[f"draft_{cid}"] = st.session_state.pop(restore_key)
+    st.session_state.setdefault("draft_store", {})[cid] = st.session_state[f"draft_{cid}"]
     st.warning("本轮在发送前被拦下，未调用模型。输入已自动恢复，可调整配置后发送。")
 st.subheader("继续会话", anchor=latest_anchor(cid))
-with st.form(f"chat_{cid}", clear_on_submit=True):
-    user_text = st.text_area("本轮问题", key=f"draft_{cid}", placeholder="直接说明需求或继续追问，无需手工登记进度。", height=90)
-    sent = st.form_submit_button("发送", disabled=bool(pending_calls), type="primary")
-if sent and user_text.strip():
-    st.session_state["pending_submission"] = {"conversation_id": cid,
-        "user_input": user_text, "turn_id": str(uuid4())}
-    st.rerun()
+draft_key = f"draft_{cid}"
+if draft_key not in st.session_state:
+    st.session_state[draft_key] = st.session_state.setdefault("draft_store", {}).get(cid, "")
+st.text_area("本轮问题", key=draft_key, placeholder="直接说明需求或继续追问，无需手工登记进度。", height=90,
+             on_change=remember_draft, args=(cid,))
+st.button("发送", disabled=bool(pending_calls), type="primary", on_click=submit_draft, args=(cid,))
 
 if submission := st.session_state.get("pending_submission"):
     try:
@@ -439,13 +461,17 @@ with st.expander("状态与请求检查"):
         st.json({"status": latest["status"], "elapsed_ms": latest["elapsed_ms"],
                  "http_status": latest.get("http_status"), "service_usage": latest.get("usage", {}),
                  "local_estimate": latest["request_snapshot"].get("context_meta", {}), "error": latest.get("error")})
+        latest_attempts = AttemptStore(repo).list(latest["id"])
+        render_cache_usage([attempt["usage"] for attempt in latest_attempts] or [latest.get("usage", {})], "最近业务调用缓存命中")
         with st.expander("原始响应 / 更早调用记录"):
             call_id = st.selectbox("调用 ID", [c["id"] for c in calls])
             chosen_call = repo.get_call(call_id)
             st.code(chosen_call.get("raw_response") or "（无原始响应）", language="json")
             st.json(chosen_call)
             st.write("各次尝试与可选展示反馈")
-            st.json(AttemptStore(repo).list(call_id))
+            attempts = AttemptStore(repo).list(call_id)
+            st.json(attempts)
+            render_cache_usage([attempt["usage"] for attempt in attempts] or [chosen_call.get("usage", {})], "所选业务调用缓存命中")
             st.json(repo.get_turn_extensions(call_id))
     st.write("下一轮请求预览（不会调用模型）")
     preview_input = st.text_area("预览用输入", "继续", key=f"preview_{cid}")
@@ -473,3 +499,5 @@ with st.expander("状态与请求检查"):
                     st.rerun()
                 except (ValueError, RuntimeError) as exc:
                     st.error(str(exc))
+
+arm_mobile_poll(repo)

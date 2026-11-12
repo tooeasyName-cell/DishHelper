@@ -181,6 +181,8 @@ class Repository(SharingMixin, ExtensionsMixin):
             initialize_search(connection)
             from .maintenance import initialize_maintenance
             initialize_maintenance(connection)
+            from .mobile import initialize_mobile
+            initialize_mobile(connection)
             from .reference_layout import initialize_reference_layout
             initialize_reference_layout(connection)
         # Seeding is idempotent and never overwrites a configured default/profile.
@@ -198,6 +200,8 @@ class Repository(SharingMixin, ExtensionsMixin):
             ids = [item["id"] for item in models]
             if len(ids) != len(set(ids)) or not all(model_id in ids for model_id in scenes.values()):
                 raise ValueError("初始场景模型不存在或模型 ID 重复。")
+            if any(item["adapter"] == "systemone" and item["id"] in scenes.values() for item in models):
+                raise ValueError("场景回答不能使用决策型模型。")
             defaults = models, scenes
 
         profile = validate_profile({
@@ -363,6 +367,11 @@ class Repository(SharingMixin, ExtensionsMixin):
         normalized = validate_profile(profile)
         timestamp = _now()
         with self._connect(write=True) as connection:
+            if normalized["adapter"] == "systemone" and (
+                connection.execute("SELECT 1 FROM scene_models WHERE model_id=?", (normalized["id"],)).fetchone()
+                or connection.execute("SELECT 1 FROM conversations WHERE model_id=?", (normalized["id"],)).fetchone()
+            ):
+                raise ValueError("此档案已用于业务回答，请新建决策型模型档案。")
             connection.execute("""
                 INSERT INTO models(id,profile_json,created_at,updated_at) VALUES (?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET
@@ -385,12 +394,19 @@ class Repository(SharingMixin, ExtensionsMixin):
                 raise RuntimeError("场景默认模型尚未初始化。")
             return row["model_id"]
 
+    @staticmethod
+    def _require_chat_model(connection, model_id):
+        row = connection.execute("SELECT profile_json FROM models WHERE id=?", (model_id,)).fetchone()
+        if row is None:
+            raise ValueError("模型配置不存在。")
+        if json.loads(row[0])["adapter"] == "systemone":
+            raise ValueError("业务回答不能使用决策型模型。")
+
     def set_scene_model(self, scene: str, model_id: str) -> None:
         if scene not in SCENES:
             raise ValueError("未知场景。")
         with self._connect(write=True) as connection:
-            if connection.execute("SELECT 1 FROM models WHERE id=?", (model_id,)).fetchone() is None:
-                raise ValueError("模型配置不存在。")
+            self._require_chat_model(connection, model_id)
             connection.execute(
                 "INSERT INTO scene_models VALUES (?,?) ON CONFLICT(scene) DO UPDATE SET model_id=excluded.model_id",
                 (scene, model_id),
@@ -419,8 +435,7 @@ class Repository(SharingMixin, ExtensionsMixin):
                 model_id = connection.execute(
                     "SELECT model_id FROM scene_models WHERE scene=?", (scene,)
                 ).fetchone()["model_id"]
-            if connection.execute("SELECT 1 FROM models WHERE id=?", (model_id,)).fetchone() is None:
-                raise ValueError("模型配置不存在。")
+            self._require_chat_model(connection, model_id)
             if title is None:
                 title = {"planning": "饮食规划", "shopping": "买菜挑菜", "cooking": "备菜煮菜"}[scene]
                 if parent_id is not None:
@@ -476,10 +491,8 @@ class Repository(SharingMixin, ExtensionsMixin):
             existing = self._get_conversation(connection, conversation_id)
             if explain is not None and type(explain) is not bool:
                 raise ValueError("解释模式必须为布尔值。")
-            if model_id is not None and connection.execute(
-                "SELECT 1 FROM models WHERE id=?", (model_id,)
-            ).fetchone() is None:
-                raise ValueError("模型配置不存在。")
+            if model_id is not None:
+                self._require_chat_model(connection, model_id)
             explain = existing["explain"] if explain is None else explain
             model_id = existing["model_id"] if model_id is None else model_id
             title = existing["title"] if title is None else _required_text(title, "会话名称").strip()
@@ -535,6 +548,8 @@ class Repository(SharingMixin, ExtensionsMixin):
 
     @staticmethod
     def _has_pending_usage_requests(connection: sqlite3.Connection) -> bool:
+        if connection.execute("SELECT 1 FROM mobile_jobs WHERE status IN ('queued','running') LIMIT 1").fetchone():
+            return True
         return any(connection.execute(
             f"SELECT 1 FROM {table} WHERE status='pending' LIMIT 1"
         ).fetchone() is not None for table in ("calls", "turns", "comparisons", "search_tasks", "maintenance_tasks", "reference_layout_tasks"))
@@ -550,6 +565,7 @@ class Repository(SharingMixin, ExtensionsMixin):
         pending check and deletion. Never abort an in-flight paid request here.
         """
         tables = (
+            "mobile_navigation", "mobile_state", "mobile_jobs",
             "reference_layout_tasks", "maintenance_tasks", "maintenance_notices", "persistent_maintenance_state", "search_tasks", "call_attempts", "turn_extensions", "context_displays",
             "model_feedback", "context_feedback", "app_feedback", "user_feedback",
             "comparisons", "shared_receipts", "shared_entries", "day_scopes",

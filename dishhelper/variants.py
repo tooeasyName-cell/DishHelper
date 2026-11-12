@@ -40,7 +40,7 @@ VARIANT_LABELS = {BASELINE_VERSION: "来源提示词重放", CANDIDATE_VERSION: 
                  V3_BASELINE_VERSION: "旧版来源重放 v3", V3_CANDIDATE_VERSION: "旧版精简候选 v3",
                  PREVIOUS_BASELINE_VERSION: "旧版来源重放 v2", PREVIOUS_CANDIDATE_VERSION: "旧版精简候选 v2",
                  LEGACY_BASELINE_VERSION: "旧版来源重放 v1", LEGACY_CANDIDATE_VERSION: "旧版精简候选 v1"}
-APP_VERSION = "0.8.1"
+APP_VERSION = "0.9.3"
 PROTOCOL_VERSION = "core-v1+sharing-v3+feedback-v4+display-v1+long-reference-v1+persistent-impact-v1"
 
 # 默认场景说明的编辑入口：只修改下面三引号内的文字，保存后重启应用。

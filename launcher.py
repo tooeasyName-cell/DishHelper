@@ -19,6 +19,12 @@ def available_port(requested):
 
 
 def self_test():
+    # The demo adapter never initializes HTTPS. Check the frozen interpreter's
+    # TLS resources too, without using credentials or making network requests.
+    import ssl
+    context = ssl.create_default_context()
+    assert context.verify_mode == ssl.CERT_REQUIRED and context.check_hostname
+    assert context.cert_store_stats()['x509_ca'] > 0
     from dishhelper.service import ChatService
     from dishhelper.storage import Repository
     from dishhelper.variants import APP_VERSION
@@ -30,7 +36,7 @@ def self_test():
         assert result["status"] == "succeeded"
         assert len(repo.list_turns(cid)) == 1
         assert "search_proposal" not in repo.get_call("self-test")["request_snapshot"]["body"]["messages"][0]["content"]
-        print(json.dumps({"ok": True, "version": APP_VERSION, "demo": "saved", "search": "disabled"}))
+        print(json.dumps({"ok": True, "version": APP_VERSION, "demo": "saved", "search": "disabled", "https_tls": "ready"}))
 
 
 def open_when_ready(url):
@@ -63,6 +69,21 @@ def main():
         port = available_port(0)
     from dishhelper.runtime_paths import data_directory
     data_directory().mkdir(parents=True, exist_ok=True)
+    # Start an already-configured mobile bridge even with no browser page.
+    # First-run databases/configuration are initialized by the app itself.
+    import os
+    from dishhelper.service import load_local_env
+    from dishhelper.runtime_paths import local_env_path
+    from dishhelper.storage import Repository
+    from dishhelper.mobile_server import ensure_runtime
+    load_local_env(local_env_path())
+    database_path = Path(os.environ.get("DISHHELPER_DB", str(data_directory() / "dishhelper.sqlite3")))
+    if database_path.is_file():
+        mobile_repo = Repository(database_path)
+        mobile_repo.initialize()
+        mobile_state = ensure_runtime(mobile_repo)
+        if mobile_state.get("error"):
+            print("手机桥接未启动：" + mobile_state["error"], file=sys.stderr, flush=True)
     url = f"http://127.0.0.1:{port}"
     print(f"DishHelper\n本机地址：{url}\n数据目录：{data_directory()}\n关闭此窗口或按 Ctrl+C 停止程序。", flush=True)
     if not args.no_browser:

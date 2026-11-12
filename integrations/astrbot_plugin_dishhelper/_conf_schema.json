@@ -1,0 +1,33 @@
+{
+  "enabled": {
+    "description": "启用 DishHelper 桥接",
+    "type": "bool",
+    "default": false
+  },
+  "base_url": {
+    "description": "DishHelper 本机接口",
+    "type": "string",
+    "default": "http://127.0.0.1:8765",
+    "hint": "与 DishHelper 设置中的端口一致，仅允许本机 HTTP 地址。"
+  },
+  "api_token": {
+    "description": "连接密钥",
+    "type": "string",
+    "default": "",
+    "secret": true,
+    "hint": "复制 DishHelper 的桥接密钥，不是模型服务商 API Key。"
+  },
+  "bound_origin": {
+    "description": "绑定的私聊来源 UMO",
+    "type": "string",
+    "default": "",
+    "_special": "umo",
+    "hint": "两端填写完全一致的单个私聊来源，例如 qq_official:FriendMessage:…；不支持群聊。"
+  },
+  "chunk_size": {
+    "description": "每段最大字符数",
+    "type": "int",
+    "default": 1500,
+    "hint": "按原有段落切分，保留全部文字；有效范围200–1500。平台限制更小时可调低。"
+  }
+}

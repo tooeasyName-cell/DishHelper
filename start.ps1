@@ -36,8 +36,9 @@ try {
         & $venvPython -m pip install -r requirements.txt
         if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed. Check network access, then retry.' }
     }
-    $headless = if ($NoBrowser) { 'true' } else { 'false' }
-    & $venvPython -m streamlit run app.py --server.address 127.0.0.1 --server.port $Port --server.headless $headless --browser.gatherUsageStats false
+    $launcherArguments = @('launcher.py', '--port', "$Port")
+    if ($NoBrowser) { $launcherArguments += '--no-browser' }
+    & $venvPython @launcherArguments
     if ($LASTEXITCODE -ne 0) { throw 'The server stopped with an error. Review the message above.' }
 }
 finally { Pop-Location }
