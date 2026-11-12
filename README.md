@@ -4,6 +4,8 @@
 
 ## 下载与启动
 
+希望让本地 AI Agent 帮你安装和配置？把 [首次配置指南 AGENT_SETUP.md](AGENT_SETUP.md) 交给它，或复制指南开头的指令。Agent 可按你的选择处理免安装版/源码版启动、本地演示、真实模型配置，以及可选的 AstrBot 手机私聊入口；需要登录和输入密钥时由你在本机完成。指南也包含逐项验收与故障定位，不要求一次配齐所有功能。
+
 0.9.3 同时提供 Windows x64 免安装包和源码包。新版 Windows 包已补齐 HTTPS 初始化所需资源，修复旧包调用外部模型时可能出现的“路径不存在”错误，保留证书和主机名校验。
 
 1. Windows 用户在 [Releases](https://github.com/tooeasyName-cell/DishHelper/releases) 下载 `DishHelper-0.9.3-Windows-x64.zip`，完整解压后双击 `DishHelper.exe`，无需安装 Python；保留同目录的 `_internal` 文件夹。
@@ -18,7 +20,7 @@ Windows 启动脚本适用于 Windows 10/11 64 位；其它系统可按源码方
 
 展开侧栏“模型初始设置”，可使用预置的 DeepSeek 档案，或新建 `openai_chat` 档案并填写服务商提供的 Base URL 和模型名称。预置 DeepSeek 档案的凭据引用为 `DEEPSEEK_API_KEY`，在密码框输入自己的 API Key 后保存。仅预置一个近期问答为 0 轮的 DeepSeek 档案，三个场景默认选择该档案；已有用户的模型档案保持原样。
 
-密码框输入的 Key 仅在当前程序运行期间有效。如需重启后继续使用，可在下述数据目录中创建 `.env`，写入 `DEEPSEEK_API_KEY=你的密钥`，然后重启；也可自行设置同名系统环境变量。使用其他模型时，请对应其凭据引用填写环境变量名。请妥善保管该文件，不要随截图、日志或压缩包分享。
+密码框输入的 Key 仅在当前程序运行期间有效。如需重启后继续使用，免安装版在 `%LOCALAPPDATA%\DishHelper\.env`、源码版在项目根目录（与 `launcher.py` 同级）的 `.env` 中写入 `DEEPSEEK_API_KEY=你的密钥`，然后重启；也可自行设置同名环境变量。使用其他模型时，请对应其凭据引用填写环境变量名。请妥善保管该文件，不要随截图、日志或压缩包分享。
 
 支持兼容 OpenAI Chat Completions 的服务，不支持所有服务商的原生协议。调用费用由你的模型服务商收取。程序会发送本轮输入和所需的会话背景，输入前请考虑所选服务商的数据处理规则。
 
